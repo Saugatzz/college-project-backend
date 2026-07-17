@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { MailerService } from '@nestjs-modules/mailer';
 
 const ADMIN_EMAIL  = process.env.ADMIN_EMAIL  ?? 'admin@nepaltreks.com';
-const BUSINESS_NAME = process.env.BUSINESS_NAME ?? 'SwiftRoute Global Pvt Ltd.';
+const BUSINESS_NAME = process.env.BUSINESS_NAME ?? 'Saugat Suman Shovit Collective Pvt Ltd.';
 const FRONTEND_URL  = process.env.FRONTEND_URL  ?? 'http://localhost:3000';
 
 function emailShell(title: string, body: string): string {
@@ -34,7 +34,7 @@ function emailShell(title: string, body: string): string {
   <div class="wrapper">
     <div class="header">
       <h1>🏔️ ${BUSINESS_NAME}</h1>
-      <p>SwiftRoute Global Pvt Ltd.</p>
+      <p>Saugat Suman Shovit Collective Pvt Ltd.</p>
     </div>
     <div class="body">
       <h2>${title}</h2>
