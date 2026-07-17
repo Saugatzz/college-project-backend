@@ -2,10 +2,21 @@
 //
 // Content-Based Recommendation Engine — Cosine Similarity
 // ---------------------------------------------------------------------------
-// Every tour package is converted into a numeric feature vector built from:
-//   - normalised numeric attributes  (price, duration, rating)
-//   - one-hot encoded categorical attributes (category, difficulty, location)
-//   - boolean attributes (familyFriendly, freeCancellation)
+// Every tour package is converted into a numeric feature vector built from
+// exactly four signals — the ones that actually determine whether two tours
+// are "the same kind of trip":
+//
+//   - price       (normalised numeric)
+//   - days        (normalised numeric)
+//   - difficulty  (one-hot categorical: Easy / Moderate / Challenging / etc.)
+//   - category    (one-hot categorical: Trekking / Sightseeing / etc.)
+//
+// Rating, location, and boolean flags (familyFriendly, freeCancellation)
+// were removed on purpose — they were either near-constant across the
+// catalog (rating defaults to 5.0 for every new tour) or just noise for
+// this comparison, and were manufacturing false similarity between tours
+// that have nothing in common (e.g. a Kathmandu Valley city tour scoring
+// close to Langtang/EBC instead of Chitlang).
 //
 // Two tours are then compared using the Cosine Similarity measure:
 //
@@ -14,15 +25,7 @@
 //               ||A|| ||B||
 //
 // which yields a value in [0, 1] — 1 meaning the tours are (feature-wise)
-// identical and 0 meaning they share nothing in common. Because every
-// feature is normalised to the same [0, 1] scale before comparison, no
-// single field (e.g. price) is able to dominate the similarity score.
-//
-// This is the same technique used by "content-based filtering" recommender
-// systems (e.g. recommending similar articles/products based on their
-// attributes rather than other users' behaviour), which avoids the
-// "cold start" problem that user-based/collaborative filtering suffers
-// from when a tour is new and has no bookings yet.
+// identical and 0 meaning they share nothing in common.
 // ---------------------------------------------------------------------------
 
 import { Package } from 'src/entities/package.entity';
@@ -38,9 +41,16 @@ function range(values: number[]): { min: number; max: number } {
   return { min: Math.min(...values), max: Math.max(...values) };
 }
 
-/** Min-max normalisation into [0, 1]. Returns 0.5 (neutral) when all values are equal. */
+/**
+ * Min-max normalisation into [0, 1].
+ *
+ * When every value in the catalog is identical (max === min), the feature
+ * carries zero information, so it contributes 0 rather than a "neutral"
+ * 0.5 — a constant value here would give every pair of tours a free,
+ * fake similarity boost on that dimension.
+ */
 function normalize(value: number, r: { min: number; max: number }): number {
-  if (r.max === r.min) return 0.5;
+  if (r.max === r.min) return 0;
   return (value - r.min) / (r.max - r.min);
 }
 
@@ -56,36 +66,35 @@ function oneHot(value: string | undefined, universe: string[]): number[] {
 }
 
 /**
- * Builds a normalised feature vector for every package in the supplied list.
- * The vector space (min/max ranges, one-hot universes) is derived from the
- * list itself, so callers should pass the full comparison set (target +
- * candidates) to get consistent, comparable vectors.
+ * Builds a normalised feature vector for every package in the supplied list,
+ * using only price, days, difficulty, and category. The vector space
+ * (min/max ranges, one-hot universes) is derived from the list itself, so
+ * callers should pass the full comparison set (target + candidates) to get
+ * consistent, comparable vectors.
  */
 export function buildFeatureVectors(packages: Package[]): Map<number, number[]> {
-  const categories = uniqueValues(packages, (p) => p.category);
   const difficulties = uniqueValues(packages, (p) => p.difficulty);
-  const locations = uniqueValues(packages, (p) => p.location);
+  const categories = uniqueValues(packages, (p) => p.category);
 
   const priceRange = range(packages.map((p) => Number(p.price)));
   const daysRange = range(packages.map((p) => Number(p.days)));
-  const ratingRange = range(packages.map((p) => Number(p.rating)));
 
   const vectors = new Map<number, number[]>();
 
   for (const p of packages) {
     const vec: number[] = [
-      // Numeric features — weighted slightly higher (1.5x) since price is
-      // usually the strongest signal of "similar kind of trip".
-      normalize(Number(p.price), priceRange) * 1.5,
+      // Price and duration are the strongest numeric signals of "how big
+      // a trip is" — kept at equal weight so neither dominates.
+      normalize(Number(p.price), priceRange),
       normalize(Number(p.days), daysRange),
-      normalize(Number(p.rating), ratingRange),
-      // Boolean features
-      p.familyFriendly ? 1 : 0,
-      p.freeCancellation ? 1 : 0,
-      // One-hot categorical features
-      ...oneHot(p.category, categories),
-      ...oneHot(p.difficulty, difficulties),
-      ...oneHot(p.location, locations),
+
+      // Difficulty is the strongest single proxy for "comparable
+      // experience" — weighted highest so an Easy city tour and a
+      // Moderate/Challenging multi-day trek clearly separate.
+      ...oneHot(p.difficulty, difficulties).map((v) => v * 2.0),
+
+      // Category groups tours by type (Trekking vs Sightseeing, etc.).
+      ...oneHot(p.category, categories).map((v) => v * 1.5),
     ];
     vectors.set(p.id, vec);
   }
@@ -111,8 +120,10 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
 /**
  * Ranks `candidates` by how similar they are to `target`, using cosine
- * similarity over the feature vectors described above, and returns the
- * top `limit` matches (highest similarity first).
+ * similarity over price/days/difficulty/category, and returns the top
+ * `limit` matches (highest similarity first). Candidates below `minScore`
+ * are excluded entirely — with a small catalog, this prevents unrelated
+ * tours from appearing just to fill the limit.
  *
  * Time complexity: O(n * d) to build vectors + O(n log n) to sort, where
  * n = number of candidate packages and d = feature vector dimensionality.
@@ -121,6 +132,7 @@ export function rankSimilarPackages(
   target: Package,
   candidates: Package[],
   limit = 3,
+  minScore = 0.35,
 ): ScoredPackage[] {
   const others = candidates.filter((c) => c.id !== target.id);
   const vectors = buildFeatureVectors([target, ...others]);
@@ -131,6 +143,8 @@ export function rankSimilarPackages(
     score: cosineSimilarity(targetVec, vectors.get(c.id)!),
   }));
 
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, limit);
+  return scored
+    .filter((s) => s.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
 }
