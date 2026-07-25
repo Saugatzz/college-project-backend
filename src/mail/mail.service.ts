@@ -27,7 +27,11 @@ function emailShell(title: string, body: string): string {
     .status-confirmed { background:#f0fdf4; color:#10b981; }
     .status-cancelled { background:#fef2f2; color:#ef4444; }
     .btn { display:inline-block; margin-top:16px; padding:11px 26px; background:linear-gradient(135deg,#2e86c1,#0f4c81); color:#fff; font-weight:600; border-radius:8px; text-decoration:none; font-size:13px; }
+    .code-box { text-align:center; margin:20px 0; }
+    .code-box .code { display:inline-block; font-size:32px; font-weight:700; letter-spacing:10px; color:#0f4c81; background:#f0f8ff; border:1.5px dashed rgba(46,134,193,0.4); border-radius:12px; padding:14px 20px; }
     .footer { background:#f8fafc; border-top:1px solid #e2eaf4; padding:14px 32px; font-size:11px; color:#94a3b8; text-align:center; }
+    .footer p { margin:3px 0; }
+    .footer a { color:#2e86c1; text-decoration:none; }
   </style>
 </head>
 <body>
@@ -40,7 +44,10 @@ function emailShell(title: string, body: string): string {
       <h2>${title}</h2>
       ${body}
     </div>
-    <div class="footer">© ${new Date().getFullYear()} ${BUSINESS_NAME}. All rights reserved.</div>
+    <div class="footer">
+      <p>© ${new Date().getFullYear()} ${BUSINESS_NAME}. All rights reserved.</p>
+      <p>📞 <a href="tel:+9779845439816">+977 984 543 9816</a> &nbsp;·&nbsp; ✉️ <a href="mailto:saugatpant31@gmail.com">saugatpant31@gmail.com</a></p>
+    </div>
   </div>
 </body>
 </html>`.trim();
@@ -49,6 +56,27 @@ function emailShell(title: string, body: string): string {
 @Injectable()
 export class MailService {
   constructor(private mailerService: MailerService) {}
+
+  async sendVerificationCode(email: string, code: string): Promise<void> {
+    const html = emailShell('Verify your email address', `
+      <p>Use the code below to confirm this email address and continue your booking.</p>
+      <div class="code-box">
+        <span class="code">${code}</span>
+      </div>
+      <p style="font-size:13px;color:#64748b">This code expires in 10 minutes. If you didn't request this, you can safely ignore this email.</p>
+    `);
+
+    try {
+      await this.mailerService.sendMail({
+        to: email,
+        subject: `Your verification code is ${code}`,
+        html,
+      });
+    } catch (err) {
+      console.error(`Failed to send verification code to ${email}:`, err);
+      throw err;
+    }
+  }
 
   async sendBookingConfirmation(booking: {
     id: number;
@@ -94,6 +122,58 @@ export class MailService {
     }
   }
 
+  /**
+   * Notifies the business owner/admin inbox whenever a new booking comes
+   * in. Best-effort — a failure here should never block booking creation,
+   * so errors are logged and swallowed, same as the customer-facing
+   * confirmation email.
+   */
+  async sendOwnerNotification(booking: {
+    id: number;
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone: string;
+    country: string;
+    travelers: number;
+    tourName: string;
+    totalAmount: number;
+    paymentMethod: string;
+    departureDate?: string;
+    notes?: string;
+  }): Promise<void> {
+    const html = emailShell(`🔔 New Booking — #${String(booking.id).padStart(4,'0')}`, `
+      <p>A new booking just came in.</p>
+
+      <div class="info-box">
+        <p><strong>Booking ID:</strong> #${String(booking.id).padStart(4,'0')}</p>
+        <p><strong>Customer:</strong> ${booking.firstName} ${booking.lastName}</p>
+        <p><strong>Email:</strong> ${booking.email}</p>
+        <p><strong>Phone:</strong> ${booking.phone}</p>
+        <p><strong>Country:</strong> ${booking.country}</p>
+        <p><strong>Tour:</strong> ${booking.tourName}</p>
+        <p><strong>Travelers:</strong> ${booking.travelers}</p>
+        ${booking.departureDate ? `<p><strong>Departure:</strong> ${new Date(booking.departureDate).toDateString()}</p>` : ''}
+        <p><strong>Payment Method:</strong> ${booking.paymentMethod}</p>
+        <p><strong>Total Amount:</strong> $${Number(booking.totalAmount).toLocaleString()}</p>
+        <p><strong>Status:</strong> <span class="status-badge status-pending">Pending</span></p>
+        ${booking.notes ? `<p><strong>Notes:</strong> ${booking.notes}</p>` : ''}
+      </div>
+
+      <p style="font-size:13px;color:#64748b">Log in to the admin dashboard to review and confirm this booking.</p>
+    `);
+
+    try {
+      await this.mailerService.sendMail({
+        to: ADMIN_EMAIL,
+        subject: `New Booking — ${booking.tourName} (#${String(booking.id).padStart(4,'0')})`,
+        html,
+      });
+    } catch (err) {
+      console.error(`Failed to send owner notification for booking #${booking.id}:`, err);
+    }
+  }
+
   async sendStatusUpdate(booking: {
     id: number;
     email: string;
@@ -120,6 +200,7 @@ export class MailService {
     };
 
     const cfg = statusContent[booking.status] ?? statusContent.pending;
+    const statusLabel = booking.status.charAt(0).toUpperCase() + booking.status.slice(1);
 
     const html = emailShell(`${cfg.emoji} ${cfg.headline}`, `
       <p>Hi <strong>${booking.firstName}</strong>,</p>
@@ -129,7 +210,7 @@ export class MailService {
         <p><strong>Booking ID:</strong> #${String(booking.id).padStart(4,'0')}</p>
         <p><strong>Tour:</strong> ${booking.tourName}</p>
         <p><strong>Status:</strong>
-          <span class="status-badge status-${booking.status}">${booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}</span>
+          <span class="status-badge status-${booking.status}">${statusLabel}</span>
         </p>
       </div>
 
@@ -139,7 +220,7 @@ export class MailService {
     try {
       await this.mailerService.sendMail({
         to: booking.email,
-        subject: `Booking ${cfg.emoji} ${booking.status.charAt(0).toUpperCase() + booking.status.slice(1)} — ${booking.tourName}`,
+        subject: `Booking ${statusLabel} — ${booking.tourName} (#${String(booking.id).padStart(4,'0')})`,
         html,
       });
     } catch (err) {

@@ -63,6 +63,29 @@ export class Booking {
   @Column({ type: 'varchar', length: 500, nullable: true })
   receiptPath: string;
 
+  // How the customer wants to be reached after booking: 'email' or 'whatsapp'.
+  @Column({ type: 'varchar', length: 20, default: 'email' })
+  contactMethod: string;
+
+  // The actual contact detail for that method — the WhatsApp number if
+  // contactMethod is 'whatsapp', or the email address if it's 'email'.
+  // Stored explicitly (rather than always deriving from `email`/`phone`)
+  // so the admin table can show exactly what the customer chose without
+  // guessing which field to display.
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  contactValue: string;
+
+  // Proof of a successful (test-mode) card charge — resolved server-side
+  // from a signed cardPaymentToken by CardPaymentVerificationService, never
+  // trusted directly from client input. The Card equivalent of
+  // receiptPath for Khalti/eSewa. Only last4 and a generated transaction
+  // id are ever stored — full card number / CVV are never persisted.
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  cardTransactionId: string;
+
+  @Column({ type: 'varchar', length: 4, nullable: true })
+  cardLast4: string;
+
   @CreateDateColumn()
   createdAt: Date;
 

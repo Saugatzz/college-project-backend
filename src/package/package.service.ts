@@ -1,7 +1,7 @@
 // src/packages/package.service.ts
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Package } from 'src/entities/package.entity';
 import { TourItinerary } from 'src/entities/tour-itinerary.entity';
 import { TourHighlight } from 'src/entities/tour-highlight.entity';
@@ -13,6 +13,16 @@ import { FilterPackageDto } from './dto/filter.pakage.dto';
 import { Booking } from 'src/entities/booking.entity';
 import { rankSimilarPackages } from './algorithms/recommendation.util';
 import { rankByKeyword } from './algorithms/search-ranking.util';
+
+export interface PaginatedPackages {
+  data: Package[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+const DEFAULT_PAGE_SIZE = 6;
 
 @Injectable()
 export class PackagesService {
@@ -37,9 +47,8 @@ export class PackagesService {
     private readonly addonRepo: Repository<TourAddon>,
     @InjectRepository(TourImage)
     private readonly imageRepo: Repository<TourImage>,
-    // add to constructor
-@InjectRepository(Booking)
-private readonly bookingRepo: Repository<Booking>,
+    @InjectRepository(Booking)
+    private readonly bookingRepo: Repository<Booking>,
   ) {}
 
   findAll(): Promise<Package[]> {
@@ -123,14 +132,30 @@ private readonly bookingRepo: Repository<Booking>,
     return this.findOne(saved.id);
   }
 
-  async findFiltered(filters: FilterPackageDto): Promise<Package[]> {
+  /**
+   * Loads full entities (with relations) for a specific set of ids, and
+   * returns them in the same order the ids were given — needed because
+   * pagination/ranking order is decided before relations are hydrated.
+   */
+  private async hydrate(ids: number[]): Promise<Package[]> {
+    if (!ids.length) return [];
+    const items = await this.packageRepo.find({
+      where: { id: In(ids) },
+      relations: this.relations,
+    });
+    const byId = new Map(items.map(p => [p.id, p]));
+    return ids.map(id => byId.get(id)).filter((p): p is Package => !!p);
+  }
+
+  async findFiltered(filters: FilterPackageDto): Promise<PaginatedPackages> {
+    const page  = filters.page  && filters.page  > 0 ? Math.floor(filters.page)  : 1;
+    const limit = filters.limit && filters.limit > 0 ? Math.floor(filters.limit) : DEFAULT_PAGE_SIZE;
+
+    // No joins here — filtering only ever touches columns on `pkg` itself,
+    // so we avoid the one-to-many join fan-out that would break
+    // skip/take/getCount pagination.
     const qb = this.packageRepo
       .createQueryBuilder('pkg')
-      .leftJoinAndSelect('pkg.itineraries', 'itineraries')
-      .leftJoinAndSelect('pkg.highlights',  'highlights')
-      .leftJoinAndSelect('pkg.inclusions',  'inclusions')
-      .leftJoinAndSelect('pkg.addons',      'addons')
-      .leftJoinAndSelect('pkg.images',      'images')
       .where('pkg.isActive = :isActive', { isActive: true });
 
     if (filters.keyword?.trim()) {
@@ -174,29 +199,36 @@ private readonly bookingRepo: Repository<Booking>,
     if (filters.category)
       qb.andWhere('LOWER(pkg.category) = :category', { category: filters.category.toLowerCase() });
 
-    // When the user is doing a keyword search, relevance (TF-IDF) matters
-    // more than the requested sort order, so we skip SQL ORDER BY here and
-    // rank the results ourselves below.
     const isKeywordSearch = !!filters.keyword?.trim();
-    if (!isKeywordSearch) {
-      switch (filters.sortBy) {
-        case 'price_asc':     qb.orderBy('pkg.price',  'ASC');  break;
-        case 'price_desc':    qb.orderBy('pkg.price',  'DESC'); break;
-        case 'rating_desc':   qb.orderBy('pkg.rating', 'DESC'); break;
-        case 'duration_asc':  qb.orderBy('pkg.days',   'ASC');  break;
-        default:              qb.orderBy('pkg.price',  'ASC');
-      }
-    }
-
-    const results = await qb.getMany();
 
     if (isKeywordSearch) {
-      // Rank the LIKE-filtered candidates by TF-IDF relevance to the
-      // keyword instead of returning them in arbitrary DB order.
-      return rankByKeyword(results, filters.keyword!.trim()).map((r) => r.package);
+      // Relevance ranking has to happen in application code, over the full
+      // candidate set, before we can slice out a page.
+      const candidates = await qb.getMany();
+      const ranked = rankByKeyword(candidates, filters.keyword!.trim());
+      const total = ranked.length;
+      const start = (page - 1) * limit;
+      const pageIds = ranked.slice(start, start + limit).map(r => r.package.id);
+      const data = await this.hydrate(pageIds);
+      return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
     }
 
-    return results;
+    switch (filters.sortBy) {
+      case 'price_asc':    qb.orderBy('pkg.price',  'ASC');  break;
+      case 'price_desc':   qb.orderBy('pkg.price',  'DESC'); break;
+      case 'rating_desc':  qb.orderBy('pkg.rating', 'DESC'); break;
+      case 'duration_asc': qb.orderBy('pkg.days',   'ASC');  break;
+      default:              qb.orderBy('pkg.price',  'ASC');
+    }
+    // Stable tiebreaker so page boundaries don't shuffle rows with equal sort values
+    qb.addOrderBy('pkg.id', 'ASC');
+
+    const total = await qb.getCount();
+    qb.skip((page - 1) * limit).take(limit);
+    const pageEntities = await qb.getMany();
+    const data = await this.hydrate(pageEntities.map(p => p.id));
+
+    return { data, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) };
   }
 
   /**
@@ -262,21 +294,20 @@ private readonly bookingRepo: Repository<Booking>,
     return this.findOne(id);
   }
 
- async remove(id: number): Promise<void> {
-  // Check if any bookings reference this package
-  const bookingCount = await this.bookingRepo.count({
-    where: { tourId: id },
-  });
+  async remove(id: number): Promise<void> {
+    const bookingCount = await this.bookingRepo.count({
+      where: { tourId: id },
+    });
 
-  if (bookingCount > 0) {
-    throw new BadRequestException(
-      `Cannot delete package #${id} — it has ${bookingCount} booking(s). Deactivate it instead.`
-    );
+    if (bookingCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete package #${id} — it has ${bookingCount} booking(s). Deactivate it instead.`
+      );
+    }
+
+    const pkg = await this.findOne(id);
+    await this.packageRepo.remove(pkg);
   }
-
-  const pkg = await this.findOne(id);
-  await this.packageRepo.remove(pkg);
-}
 
   findBySlug(slug: string): Promise<Package | null> {
     return this.packageRepo.findOne({

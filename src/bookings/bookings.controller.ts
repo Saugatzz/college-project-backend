@@ -68,8 +68,9 @@ export class BookingsController {
     const relativePath = `uploads/receipts/${file.filename}`;
     return this.bookingsService.saveReceiptPath(id, relativePath);
   }
+
   @Post(':id/resend-confirmation')
-async resendConfirmation(@Param('id') id: string) {
-  return this.bookingsService.resendConfirmation(+id);
-}
+  async resendConfirmation(@Param('id') id: string) {
+    return this.bookingsService.resendConfirmation(+id);
+  }
 }

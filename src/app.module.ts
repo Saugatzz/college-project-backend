@@ -9,16 +9,15 @@ import { BookingsModule } from './bookings/bookings.module';
 import { ContactsModule } from './contact/contact.module';
 import { AuthModule } from './auth/auth.module';
 import { MailModule } from './mail/mail.module';
-
+import { EmailVerificationModule } from './email-verification/email-verification.module';
+import { PaymentsModule } from './payments/payments.module';
 
 @Module({
   imports: [
-    
     ConfigModule.forRoot({
       isGlobal: true,
     }),
-    
-    
+
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -29,20 +28,19 @@ import { MailModule } from './mail/mail.module';
         username: configService.get<string>('DB_USERNAME'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_NAME'),
-        autoLoadEntities: true, 
-        synchronize: true, 
+        autoLoadEntities: true,
+        synchronize: true,
       }),
     }),
-   PackagesModule,
-    BookingsModule,
     PackagesModule,
+    BookingsModule,
     ContactsModule,
     AuthModule,
     MailModule,
+    EmailVerificationModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
-export class AppModule {
-  
-}
+export class AppModule {}

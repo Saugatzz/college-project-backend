@@ -7,6 +7,7 @@ import {
   Min,
   IsArray,
   ValidateNested,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -71,6 +72,30 @@ export class CreateBookingDto {
   @ValidateNested({ each: true })
   @Type(() => BookingAddonDto)
   selectedAddons?: BookingAddonDto[];
+
+  // ── Contact preference ──────────────────────────────────────
+  @IsOptional()
+  @IsIn(['email', 'whatsapp'])
+  contactMethod?: 'email' | 'whatsapp';
+
+  @IsOptional()
+  @IsString()
+  contactValue?: string;
+
+  // ── Email verification ──────────────────────────────────────
+  @IsString()
+  emailVerificationToken: string;
+
+  // ── Card payment verification ───────────────────────────────
+  // Signed token returned by POST /payments/card/charge. Required when
+  // paymentMethod is 'Card'. BookingsService verifies this
+  // cryptographically (CardPaymentVerificationService) rather than
+  // trusting any transactionId/last4 sent directly — so a booking can
+  // never be created for a card that wasn't actually "charged" through
+  // the charge endpoint.
+  @ValidateIf((o) => o.paymentMethod === 'Card')
+  @IsString()
+  cardPaymentToken?: string;
 }
 
 export class UpdateBookingStatusDto {
