@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Booking } from 'src/entities/booking.entity';
-import { CreateBookingDto } from './dto/bookings.dto';
+import { CreateBookingDto, UpdateGuideCoordinationDto } from './dto/bookings.dto';
 import { MailService } from 'src/mail/mail.service';
 import { EmailVerificationService } from 'src/email-verification/email-verification.service';
 import { CardPaymentVerificationService } from 'src/payments/card-payment-verification.service';
@@ -51,6 +51,12 @@ export class BookingsService {
     const contactValue =
       contactMethod === 'whatsapp' ? (dto.contactValue ?? dto.phone) : dto.email;
 
+    // The exact-date guarantee fee only ever applies to exact-date
+    // bookings — flexible bookings never carry a surcharge, regardless of
+    // what a client sends.
+    const dateFlexibility = dto.dateFlexibility ?? 'exact';
+    const dateSurcharge = dateFlexibility === 'flexible' ? 0 : (dto.dateSurcharge ?? 0);
+
     const booking = this.bookingRepo.create({
       tourId:         dto.tourId,
       firstName:      dto.firstName,
@@ -63,6 +69,7 @@ export class BookingsService {
       paymentMethod:  dto.paymentMethod,
       tourPrice:      dto.tourPrice,
       addonsTotal:    dto.addonsTotal ?? 0,
+      dateSurcharge,
       totalAmount:    dto.totalAmount,
       selectedAddons: dto.selectedAddons ?? [],
       status:         'pending',
@@ -70,6 +77,12 @@ export class BookingsService {
       contactValue,
       cardTransactionId,
       cardLast4,
+      // ── Preferred start timing, as requested by the customer ──
+      preferredDate:      dto.preferredDate,
+      dateFlexibility,
+      flexibilityWindow:  dateFlexibility === 'flexible' ? dto.flexibilityWindow : undefined,
+      dateNotes:          dto.dateNotes,
+      guideCoordinationStatus: 'pending_contact',
     });
     const saved = await this.bookingRepo.save(booking);
     console.log('Booking saved, sending mail to:', saved.email);
@@ -85,7 +98,10 @@ export class BookingsService {
       travelers:     full.travelers,
       totalAmount:   full.totalAmount,
       paymentMethod: full.paymentMethod,
-      departureDate: full.departureDate,
+      preferredDate:     full.preferredDate,
+      dateFlexibility:   full.dateFlexibility,
+      flexibilityWindow: full.flexibilityWindow,
+      dateSurcharge:     full.dateSurcharge,
     });
 
     // Owner/admin notification
@@ -100,8 +116,12 @@ export class BookingsService {
       tourName:      full.tour?.name ?? 'a tour',
       totalAmount:   full.totalAmount,
       paymentMethod: full.paymentMethod,
-      departureDate: full.departureDate,
       notes:         full.notes,
+      preferredDate:     full.preferredDate,
+      dateFlexibility:   full.dateFlexibility,
+      flexibilityWindow: full.flexibilityWindow,
+      dateNotes:         full.dateNotes,
+      dateSurcharge:     full.dateSurcharge,
     });
 
     return saved;
@@ -131,6 +151,47 @@ export class BookingsService {
     return saved;
   }
 
+  // Admin-only: records progress reaching out to local guides for the
+  // customer's requested window, and — once guides are confirmed — locks
+  // in the actual departure date. Each change emails the customer. There
+  // is no "unable to accommodate" outcome: a guide is always assigned
+  // eventually, whether guaranteed via the exact-date surcharge or worked
+  // out within a flexible window.
+  async updateGuideCoordination(
+    id: number,
+    dto: UpdateGuideCoordinationDto,
+  ): Promise<Booking> {
+    const booking = await this.findOne(id);
+
+    if (booking.status === 'cancelled') {
+      throw new BadRequestException(
+        `Booking #${id} is cancelled; guide coordination can no longer be updated.`,
+      );
+    }
+
+    booking.guideCoordinationStatus = dto.guideCoordinationStatus;
+    if (dto.guideCoordinationStatus === 'guides_confirmed' && dto.confirmedDepartureDate) {
+      booking.departureDate = dto.confirmedDepartureDate;
+    }
+
+    const saved = await this.bookingRepo.save(booking);
+    const full = await this.findOne(saved.id);
+
+    this.mailService.sendGuideCoordinationUpdate({
+      id:            full.id,
+      email:         full.email,
+      firstName:     full.firstName,
+      tourName:      full.tour?.name ?? 'your tour',
+      guideCoordinationStatus: full.guideCoordinationStatus,
+      departureDate: full.departureDate,
+      preferredDate: full.preferredDate,
+      dateFlexibility: full.dateFlexibility,
+      flexibilityWindow: full.flexibilityWindow,
+    });
+
+    return saved;
+  }
+
   async saveReceiptPath(id: number, path: string): Promise<Booking> {
     const booking = await this.findOne(id);
     booking.receiptPath = path;
@@ -147,7 +208,10 @@ export class BookingsService {
       travelers:     booking.travelers,
       totalAmount:   booking.totalAmount,
       paymentMethod: booking.paymentMethod,
-      departureDate: booking.departureDate,
+      preferredDate:     booking.preferredDate,
+      dateFlexibility:   booking.dateFlexibility,
+      flexibilityWindow: booking.flexibilityWindow,
+      dateSurcharge:     booking.dateSurcharge,
     });
     return { message: 'Confirmation email resent.' };
   }

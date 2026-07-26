@@ -8,7 +8,11 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import { BookingsService } from './bookings.service';
-import { CreateBookingDto, UpdateBookingStatusDto } from './dto/bookings.dto';
+import {
+  CreateBookingDto,
+  UpdateBookingStatusDto,
+  UpdateGuideCoordinationDto,
+} from './dto/bookings.dto';
 
 
 @Controller('bookings')
@@ -36,6 +40,16 @@ export class BookingsController {
     @Body() dto: UpdateBookingStatusDto,
   ) {
     return this.bookingsService.updateStatus(id, dto.status);
+  }
+
+  // Admin-only: track / advance guide coordination for a booking's
+  // preferred start window. Emails the customer on every change.
+  @Patch(':id/guide-status')
+  updateGuideCoordination(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateGuideCoordinationDto,
+  ) {
+    return this.bookingsService.updateGuideCoordination(id, dto);
   }
 
   // Upload PDF receipt for Khalti / eSewa payments

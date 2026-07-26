@@ -35,6 +35,10 @@ export class Booking {
   @Column({ type: 'int', default: 1 })
   travelers: number;
 
+  // The CONFIRMED departure date, set by an admin once guide coordination
+  // has actually locked something in (see guideCoordinationStatus below).
+  // This is distinct from preferredDate, which is only what the customer
+  // asked for at checkout.
   @Column({ type: 'date', nullable: true })
   departureDate: string;
 
@@ -49,6 +53,13 @@ export class Booking {
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   addonsTotal: number;
+
+  // Extra charge applied when the customer commits to an EXACT preferred
+  // date rather than a flexible window. Paying this guarantees a guide is
+  // assigned for that date — exact-date bookings can never end up
+  // "unable to accommodate". Always 0 for flexible bookings.
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  dateSurcharge: number;
 
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   totalAmount: number;
@@ -74,6 +85,35 @@ export class Booking {
   // guessing which field to display.
   @Column({ type: 'varchar', length: 255, nullable: true })
   contactValue: string;
+
+  // ── Preferred start timing ─────────────────────────────────────────
+  // What the customer asked for at checkout — either an exact date, or
+  // (when dateFlexibility === 'flexible') the 1st of a preferred month
+  // paired with a flexibilityWindow describing how loose that anchor is.
+  @Column({ type: 'date', nullable: true })
+  preferredDate: string;
+
+  @Column({ type: 'varchar', length: 20, default: 'exact' })
+  dateFlexibility: 'exact' | 'flexible';
+
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  flexibilityWindow: string; // e.g. '±1 week', 'Whole month'
+
+  @Column({ type: 'text', nullable: true })
+  dateNotes: string;
+
+  // ── Guide coordination ──────────────────────────────────────────────
+  // Tracks the business's progress lining up local guides for the
+  // customer's requested window. Admin-managed; each change emails the
+  // customer an update. When it reaches 'guides_confirmed', departureDate
+  // above gets set to the actual locked-in date.
+  //
+  // There is no "couldn't accommodate" terminal state: exact-date
+  // bookings guarantee a guide via dateSurcharge, and flexible bookings
+  // are simply worked until a departure date is confirmed within the
+  // customer's window.
+  @Column({ type: 'varchar', length: 30, default: 'pending_contact' })
+  guideCoordinationStatus: 'pending_contact' | 'contacting_guides' | 'guides_confirmed';
 
   // Proof of a successful (test-mode) card charge — resolved server-side
   // from a signed cardPaymentToken by CardPaymentVerificationService, never

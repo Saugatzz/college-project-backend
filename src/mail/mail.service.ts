@@ -1,9 +1,29 @@
 import { Injectable } from '@nestjs/common';
 import { MailerService } from '@nestjs-modules/mailer';
 
-const ADMIN_EMAIL  = process.env.ADMIN_EMAIL  ?? 'admin@nepaltreks.com';
-const BUSINESS_NAME = process.env.BUSINESS_NAME ?? 'Saugat Suman Shovit Collective Pvt Ltd.';
+const ADMIN_EMAIL  = process.env.ADMIN_EMAIL  ?? 'sumanbasnet301@gmail.com';
+const BUSINESS_NAME = process.env.BUSINESS_NAME ?? 'Sajilo Yatra Pvt Ltd.';
 const FRONTEND_URL  = process.env.FRONTEND_URL  ?? 'http://localhost:3000';
+
+type DateFlexibility = 'exact' | 'flexible' | undefined;
+type GuideCoordinationStatus = 'pending_contact' | 'contacting_guides' | 'guides_confirmed';
+
+// Formats a booking's requested timing (preferredDate + dateFlexibility +
+// flexibilityWindow) into one readable line, mirroring the logic used on
+// the checkout form and the admin dashboard.
+function formatPreferredTiming(b: {
+  preferredDate?: string;
+  dateFlexibility?: DateFlexibility;
+  flexibilityWindow?: string;
+}): string {
+  if (!b.preferredDate) return 'No preference given';
+  const d = new Date(b.preferredDate);
+  if (b.dateFlexibility === 'flexible') {
+    const monthLabel = d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    return `${monthLabel} (flexible — ${b.flexibilityWindow ?? 'no window given'})`;
+  }
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+}
 
 function emailShell(title: string, body: string): string {
   return `
@@ -22,10 +42,16 @@ function emailShell(title: string, body: string): string {
     .info-box  { background:#f0f8ff; border:1px solid rgba(46,134,193,0.2); border-radius:10px; padding:16px 20px; margin:16px 0; font-size:13px; }
     .info-box p { margin:5px 0; }
     .info-box strong { color:#0f4c81; }
+    .timing-box { background:#fefaf0; border:1px dashed rgba(245,158,11,0.4); border-radius:10px; padding:14px 20px; margin:16px 0; font-size:13px; }
+    .timing-box p { margin:4px 0; }
+    .timing-box strong { color:#b45309; }
     .status-badge { display:inline-block; padding:3px 12px; border-radius:20px; font-size:12px; font-weight:700; }
     .status-pending   { background:#fffbeb; color:#f59e0b; }
     .status-confirmed { background:#f0fdf4; color:#10b981; }
     .status-cancelled { background:#fef2f2; color:#ef4444; }
+    .status-pending_contact       { background:#f1f5f9; color:#64748b; }
+    .status-contacting_guides     { background:#fffbeb; color:#f59e0b; }
+    .status-guides_confirmed      { background:#f0fdf4; color:#10b981; }
     .btn { display:inline-block; margin-top:16px; padding:11px 26px; background:linear-gradient(135deg,#2e86c1,#0f4c81); color:#fff; font-weight:600; border-radius:8px; text-decoration:none; font-size:13px; }
     .code-box { text-align:center; margin:20px 0; }
     .code-box .code { display:inline-block; font-size:32px; font-weight:700; letter-spacing:10px; color:#0f4c81; background:#f0f8ff; border:1.5px dashed rgba(46,134,193,0.4); border-radius:12px; padding:14px 20px; }
@@ -86,8 +112,15 @@ export class MailService {
     travelers: number;
     totalAmount: number;
     paymentMethod: string;
-    departureDate?: string;
+    preferredDate?: string;
+    dateFlexibility?: DateFlexibility;
+    flexibilityWindow?: string;
+    dateSurcharge?: number;
   }): Promise<void> {
+    const timingLabel = formatPreferredTiming(booking);
+    const isExact = booking.dateFlexibility !== 'flexible';
+    const hasSurcharge = Number(booking.dateSurcharge) > 0;
+
     const html = emailShell(`Booking Received — #${String(booking.id).padStart(4,'0')}`, `
       <p>Hi <strong>${booking.firstName}</strong>,</p>
       <p>We've received your booking for <strong>${booking.tourName}</strong>. 
@@ -97,10 +130,17 @@ export class MailService {
         <p><strong>Booking ID:</strong> #${String(booking.id).padStart(4,'0')}</p>
         <p><strong>Tour:</strong> ${booking.tourName}</p>
         <p><strong>Travelers:</strong> ${booking.travelers}</p>
-        ${booking.departureDate ? `<p><strong>Departure:</strong> ${new Date(booking.departureDate).toDateString()}</p>` : ''}
         <p><strong>Payment Method:</strong> ${booking.paymentMethod}</p>
+        ${hasSurcharge ? `<p><strong>Exact Date Guarantee Fee:</strong> $${Number(booking.dateSurcharge).toLocaleString()}</p>` : ''}
         <p><strong>Total Amount:</strong> $${Number(booking.totalAmount).toLocaleString()}</p>
         <p><strong>Status:</strong> <span class="status-badge status-pending">Pending</span></p>
+      </div>
+
+      <div class="timing-box">
+        <p>🗓️ <strong>Requested start:</strong> ${timingLabel}</p>
+        ${isExact
+          ? `<p style="color:#92702a">Because you chose an exact date, a guide is guaranteed for your trip on this date — we'll follow up shortly to confirm final arrangements.</p>`
+          : `<p style="color:#92702a">We'll reach out to our local guides and confirm the exact departure date within your requested window shortly.</p>`}
       </div>
 
       <p style="font-size:13px;color:#64748b">
@@ -139,9 +179,17 @@ export class MailService {
     tourName: string;
     totalAmount: number;
     paymentMethod: string;
-    departureDate?: string;
     notes?: string;
+    preferredDate?: string;
+    dateFlexibility?: DateFlexibility;
+    flexibilityWindow?: string;
+    dateNotes?: string;
+    dateSurcharge?: number;
   }): Promise<void> {
+    const timingLabel = formatPreferredTiming(booking);
+    const isExact = booking.dateFlexibility !== 'flexible';
+    const hasSurcharge = Number(booking.dateSurcharge) > 0;
+
     const html = emailShell(`🔔 New Booking — #${String(booking.id).padStart(4,'0')}`, `
       <p>A new booking just came in.</p>
 
@@ -153,14 +201,22 @@ export class MailService {
         <p><strong>Country:</strong> ${booking.country}</p>
         <p><strong>Tour:</strong> ${booking.tourName}</p>
         <p><strong>Travelers:</strong> ${booking.travelers}</p>
-        ${booking.departureDate ? `<p><strong>Departure:</strong> ${new Date(booking.departureDate).toDateString()}</p>` : ''}
         <p><strong>Payment Method:</strong> ${booking.paymentMethod}</p>
+        ${hasSurcharge ? `<p><strong>Exact Date Guarantee Fee:</strong> $${Number(booking.dateSurcharge).toLocaleString()}</p>` : ''}
         <p><strong>Total Amount:</strong> $${Number(booking.totalAmount).toLocaleString()}</p>
         <p><strong>Status:</strong> <span class="status-badge status-pending">Pending</span></p>
         ${booking.notes ? `<p><strong>Notes:</strong> ${booking.notes}</p>` : ''}
       </div>
 
-      <p style="font-size:13px;color:#64748b">Log in to the admin dashboard to review and confirm this booking.</p>
+      <div class="timing-box">
+        <p>🗓️ <strong>Requested start:</strong> ${timingLabel}</p>
+        ${booking.dateNotes ? `<p><strong>Timing notes:</strong> ${booking.dateNotes}</p>` : ''}
+        ${isExact
+          ? `<p style="color:#92702a">Exact date — a guide MUST be assigned for this date (guarantee fee paid). Contact guides and move this to "Guides confirmed" as soon as arrangements are locked in.</p>`
+          : `<p style="color:#92702a">Flexible window — reach out to guides for this window and update the "Guide Coordination" status once a concrete departure date is confirmed. The customer gets an automatic email each time you do.</p>`}
+      </div>
+
+      <p style="font-size:13px;color:#64748b">Log in to the admin dashboard to review, confirm, and coordinate guides for this booking.</p>
     `);
 
     try {
@@ -225,6 +281,88 @@ export class MailService {
       });
     } catch (err) {
       console.error(`Failed to send status update to ${booking.email}:`, err);
+    }
+  }
+
+  /**
+   * Sent every time an admin updates guide-coordination progress for a
+   * booking. Keeps the customer in the loop while the business lines up
+   * local guides for their requested window — from first contact,
+   * through "still finalizing," to a locked-in departure date. There is
+   * no "couldn't accommodate" outcome: a guide is always assigned,
+   * guaranteed outright for exact dates and worked out within the window
+   * for flexible ones.
+   */
+  async sendGuideCoordinationUpdate(booking: {
+    id: number;
+    email: string;
+    firstName: string;
+    tourName: string;
+    guideCoordinationStatus: GuideCoordinationStatus;
+    departureDate?: string;
+    preferredDate?: string;
+    dateFlexibility?: DateFlexibility;
+    flexibilityWindow?: string;
+  }): Promise<void> {
+    const timingLabel = formatPreferredTiming(booking);
+    const isExact = booking.dateFlexibility !== 'flexible';
+    const confirmedLabel = booking.departureDate
+      ? new Date(booking.departureDate).toLocaleDateString('en-US', {
+          weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+        })
+      : null;
+
+    const content: Record<GuideCoordinationStatus, { emoji: string; headline: string; message: string }> = {
+      pending_contact: {
+        emoji: '🕐',
+        headline: 'We have your preferred dates',
+        message: isExact
+          ? `We've logged your exact requested date of <strong>${timingLabel}</strong>. A guide is guaranteed for this date, and we're reaching out to our local guides now to finalize arrangements.`
+          : `We've logged your requested start of <strong>${timingLabel}</strong> and will be reaching out to our local guides shortly.`,
+      },
+      contacting_guides: {
+        emoji: '📞',
+        headline: "We're lining up your guide",
+        message: isExact
+          ? `We're finalizing guide arrangements for your confirmed date of <strong>${timingLabel}</strong>. We'll follow up as soon as everything is locked in.`
+          : `We're currently reaching out to our local guides to see who's available around <strong>${timingLabel}</strong>. We'll follow up as soon as we hear back.`,
+      },
+      guides_confirmed: {
+        emoji: '✅',
+        headline: 'Your guide is confirmed!',
+        message: confirmedLabel
+          ? `Great news — we've locked in a guide and your departure date is now <strong>${confirmedLabel}</strong>.`
+          : `Great news — we've locked in a guide for your trip around <strong>${timingLabel}</strong>. We'll send your exact departure date shortly.`,
+      },
+    };
+
+    const cfg = content[booking.guideCoordinationStatus] ?? content.pending_contact;
+
+    const html = emailShell(`${cfg.emoji} ${cfg.headline}`, `
+      <p>Hi <strong>${booking.firstName}</strong>,</p>
+      <p>${cfg.message}</p>
+
+      <div class="info-box">
+        <p><strong>Booking ID:</strong> #${String(booking.id).padStart(4,'0')}</p>
+        <p><strong>Tour:</strong> ${booking.tourName}</p>
+        <p><strong>Requested start:</strong> ${timingLabel}</p>
+        ${confirmedLabel ? `<p><strong>Confirmed departure:</strong> ${confirmedLabel}</p>` : ''}
+        <p><strong>Guide coordination:</strong>
+          <span class="status-badge status-${booking.guideCoordinationStatus}">${cfg.headline}</span>
+        </p>
+      </div>
+
+      <p style="margin-top:20px;font-size:12px;color:#94a3b8">Questions about the timing? Just reply to this email.</p>
+    `);
+
+    try {
+      await this.mailerService.sendMail({
+        to: booking.email,
+        subject: `${cfg.emoji} Guide update — ${booking.tourName} (#${String(booking.id).padStart(4,'0')})`,
+        html,
+      });
+    } catch (err) {
+      console.error(`Failed to send guide coordination update to ${booking.email}:`, err);
     }
   }
 }
