@@ -11,8 +11,10 @@ import { TourImage } from 'src/entities/tour-image.entity';
 import { CreatePackageDto } from './dto/package.dto';
 import { FilterPackageDto } from './dto/filter.pakage.dto';
 import { Booking } from 'src/entities/booking.entity';
-import { rankSimilarPackages } from './algorithms/recommendation.util';
+import { User } from 'src/entities/user.entity';
+import { rankSimilarPackages, rankPackagesForUser } from './algorithms/recommendation.util';
 import { rankByKeyword } from './algorithms/search-ranking.util';
+import { InteractionsService } from 'src/interactions/interactions.service';
 
 export interface PaginatedPackages {
   data: Package[];
@@ -49,6 +51,9 @@ export class PackagesService {
     private readonly imageRepo: Repository<TourImage>,
     @InjectRepository(Booking)
     private readonly bookingRepo: Repository<Booking>,
+    @InjectRepository(User)
+    private readonly userRepo: Repository<User>,
+    private readonly interactionsService: InteractionsService,
   ) {}
 
   findAll(): Promise<Package[]> {
@@ -245,6 +250,91 @@ export class PackagesService {
       relations: this.relations,
     });
     return rankSimilarPackages(target, candidates, limit).map((r) => r.package);
+  }
+
+  // Records a tour-view interaction for a logged-in user. Fire-and-forget
+  // from the controller's point of view — a logging hiccup should never
+  // surface as an error to someone just browsing a tour page.
+  async trackInteraction(userId: string, tourId: number, type: 'view' | 'book'): Promise<void> {
+    await this.interactionsService.record(userId, tourId, type);
+  }
+
+  /**
+   * Personalized "Recommended for you" tours, built from this user's own
+   * interaction history (see algorithms/recommendation.util.ts). Falls
+   * back to top-rated active tours for users with no history yet (brand
+   * new accounts) so the dashboard is never empty.
+   */
+  async getRecommendationsForUser(userId: string | null, limit = 6): Promise<Package[]> {
+    const active = await this.packageRepo.find({
+      where: { isActive: true },
+      relations: this.relations,
+    });
+
+    const topRated = () =>
+      [...active].sort((a, b) => Number(b.rating) - Number(a.rating)).slice(0, limit);
+
+    if (!userId) return topRated();
+
+    const interactions = await this.interactionsService.getAggregatedForUser(userId);
+
+    if (interactions.length > 0) {
+      const byId = new Map(active.map((p) => [p.id, p]));
+      const weightedInteractions = interactions
+        .map((i) => ({ package: byId.get(i.tourId), weight: i.weight }))
+        .filter((i): i is { package: Package; weight: number } => !!i.package);
+
+      if (weightedInteractions.length > 0) {
+        // Never recommend tours they've already booked — they know
+        // about those already.
+        const bookedTourIds = new Set(
+          (
+            await this.bookingRepo.find({
+              where: { userId },
+            })
+          )
+            .map((b) => b.tourId)
+            .filter((id): id is number => id != null),
+        );
+
+        const ranked = rankPackagesForUser(weightedInteractions, active, bookedTourIds, limit);
+        if (ranked.length > 0) return ranked.map((r) => r.package);
+      }
+    }
+
+    // Cold start: no meaningful interaction history yet (brand new
+    // account, or one that's only ever browsed outside its stated
+    // interests). Fall back to the tour types the person picked at
+    // signup rather than an entirely generic list — see
+    // preferredCategories on the User entity.
+    const user = await this.userRepo.findOne({ where: { id: userId } });
+    const preferred = (user?.preferredCategories ?? []).map((c) => c.trim().toLowerCase()).filter(Boolean);
+    if (preferred.length > 0) {
+      const matches = active.filter((p) => preferred.includes((p.category ?? '').trim().toLowerCase()));
+      if (matches.length > 0) {
+        return matches
+          .sort((a, b) => Number(b.rating) - Number(a.rating))
+          .slice(0, limit);
+      }
+    }
+
+    return topRated();
+  }
+
+  /**
+   * Distinct tour categories currently in use across active packages —
+   * powers the "what kind of trips are you into?" picker at signup so
+   * the options always reflect the real catalog instead of a hardcoded
+   * guess that could drift out of sync.
+   */
+  async getDistinctCategories(): Promise<string[]> {
+    const rows = await this.packageRepo
+      .createQueryBuilder('p')
+      .select('DISTINCT p.category', 'category')
+      .where('p.isActive = :isActive', { isActive: true })
+      .getRawMany<{ category: string }>();
+
+    return rows.map((r) => r.category).filter(Boolean);
   }
 
   async update(id: number, dto: Partial<CreatePackageDto>): Promise<Package> {

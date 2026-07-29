@@ -218,3 +218,61 @@ export function rankSimilarPackages(
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
+
+export interface WeightedInteractedPackage {
+  package: Package;
+  weight: number;
+}
+
+/**
+ * Personalized recommendations ("Recommended for you") built from a
+ * user's own interaction history rather than a single target tour.
+ *
+ * For every tour the user has interacted with, every remaining candidate
+ * in the *same category* is scored via the same weightedSimilarity used
+ * for single-tour "similar tours" — then that similarity is multiplied
+ * by the interaction's weight (bookings count far more than page views;
+ * see InteractionsService) and accumulated into a running total per
+ * candidate. A user who's booked two Trekking tours and glanced at one
+ * Cultural tour ends up with recommendations dominated by Trekking, more
+ * strongly shaped by the tours they actually booked than the one they
+ * merely viewed.
+ *
+ * Tours already booked (or otherwise excluded) are filtered out of the
+ * candidate pool before scoring, so someone's own past bookings never
+ * show back up as a "recommendation".
+ */
+export function rankPackagesForUser(
+  interactions: WeightedInteractedPackage[],
+  candidates: Package[],
+  excludeIds: Set<number>,
+  limit = 6,
+): ScoredPackage[] {
+  const pool = candidates.filter((c) => !excludeIds.has(c.id));
+  if (interactions.length === 0 || pool.length === 0) return [];
+
+  const scoreMap = new Map<number, number>();
+
+  for (const { package: tour, weight } of interactions) {
+    const sameCategoryOthers = pool.filter(
+      (c) => c.id !== tour.id && sameCategory(c.category, tour.category),
+    );
+    if (sameCategoryOthers.length === 0) continue;
+
+    const features = buildNormalizedFeatures([tour, ...sameCategoryOthers]);
+    const tourFeatures = features.get(tour.id);
+    if (!tourFeatures) continue;
+
+    for (const c of sameCategoryOthers) {
+      const sim = weightedSimilarity(tourFeatures, features.get(c.id)!);
+      scoreMap.set(c.id, (scoreMap.get(c.id) ?? 0) + sim * weight);
+    }
+  }
+
+  const byId = new Map(pool.map((p) => [p.id, p]));
+  return Array.from(scoreMap.entries())
+    .map(([id, score]) => ({ package: byId.get(id)!, score }))
+    .filter((s): s is ScoredPackage => !!s.package && s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}

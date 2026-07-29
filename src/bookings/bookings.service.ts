@@ -1,11 +1,12 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Booking } from 'src/entities/booking.entity';
-import { CreateBookingDto, UpdateGuideCoordinationDto } from './dto/bookings.dto';
+import { CreateBookingDto, UpdateGuideCoordinationDto, UpdateMyBookingDto } from './dto/bookings.dto';
 import { MailService } from 'src/mail/mail.service';
 import { EmailVerificationService } from 'src/email-verification/email-verification.service';
 import { CardPaymentVerificationService } from 'src/payments/card-payment-verification.service';
+import { InteractionsService } from 'src/interactions/interactions.service';
 
 @Injectable()
 export class BookingsService {
@@ -15,6 +16,7 @@ export class BookingsService {
     private readonly mailService: MailService,
     private readonly emailVerificationService: EmailVerificationService,
     private readonly cardPaymentVerificationService: CardPaymentVerificationService,
+    private readonly interactionsService: InteractionsService,
   ) {}
 
   findAll(): Promise<Booking[]> {
@@ -22,6 +24,21 @@ export class BookingsService {
       relations: { tour: true },
       order: { createdAt: 'DESC' },
     });
+  }
+
+  // A user's own bookings, for their account dashboard. Matches on
+  // userId (set for anyone who was logged in at checkout) OR — so
+  // accounts registered after a guest booking still see their history —
+  // on the email address attached to the account, whichever matches
+  // more bookings.
+  findMyBookings(userId: string, email: string): Promise<Booking[]> {
+    return this.bookingRepo
+      .createQueryBuilder('booking')
+      .leftJoinAndSelect('booking.tour', 'tour')
+      .where('booking.userId = :userId', { userId })
+      .orWhere('LOWER(booking.email) = LOWER(:email)', { email })
+      .orderBy('booking.createdAt', 'DESC')
+      .getMany();
   }
 
   async findOne(id: number): Promise<Booking> {
@@ -33,8 +50,14 @@ export class BookingsService {
     return booking;
   }
 
-  async create(dto: CreateBookingDto): Promise<Booking> {
-    this.emailVerificationService.assertVerified(dto.email, dto.emailVerificationToken);
+  async create(dto: CreateBookingDto, userId?: string | null): Promise<Booking> {
+    // Logged-in accounts were already verified via this exact OTP flow
+    // at signup (see AuthService.register) — re-verifying every
+    // checkout would just be redundant friction. Guests still must
+    // prove ownership of the email they're booking under.
+    if (!userId) {
+      this.emailVerificationService.assertVerified(dto.email, dto.emailVerificationToken);
+    }
 
     let cardTransactionId: string | undefined;
     let cardLast4: string | undefined;
@@ -75,6 +98,7 @@ export class BookingsService {
       status:         'pending',
       contactMethod,
       contactValue,
+      userId:         userId ?? null,
       cardTransactionId,
       cardLast4,
       // ── Preferred start timing, as requested by the customer ──
@@ -86,6 +110,11 @@ export class BookingsService {
     });
     const saved = await this.bookingRepo.save(booking);
     console.log('Booking saved, sending mail to:', saved.email);
+
+    if (userId && saved.tourId) {
+      // Best-effort — a logging failure should never block a booking.
+      this.interactionsService.record(userId, saved.tourId, 'book').catch(() => {});
+    }
 
     const full = await this.findOne(saved.id);
 
@@ -187,6 +216,106 @@ export class BookingsService {
       preferredDate: full.preferredDate,
       dateFlexibility: full.dateFlexibility,
       flexibilityWindow: full.flexibilityWindow,
+    });
+
+    return saved;
+  }
+
+  // Lets a logged-in customer cancel their own booking, but only while
+  // it's still 'pending' — once an admin has confirmed it (or it's
+  // already cancelled), this is no longer self-service and the person
+  // needs to contact support instead. Ownership is checked strictly by
+  // userId (not the looser email-match used for findMyBookings), since
+  // this actually mutates data rather than just displaying it.
+  async cancelMyBooking(id: number, userId: string): Promise<Booking> {
+    const booking = await this.findOne(id);
+
+    if (booking.userId !== userId) {
+      throw new ForbiddenException('This booking does not belong to you.');
+    }
+    if (booking.status !== 'pending') {
+      throw new BadRequestException(
+        'Only pending bookings can be cancelled. Please contact support for help with this booking.',
+      );
+    }
+
+    booking.status = 'cancelled';
+    const saved = await this.bookingRepo.save(booking);
+
+    // Customer-facing confirmation that their cancellation went through.
+    this.mailService.sendStatusUpdate({
+      id:        saved.id,
+      email:     saved.email,
+      firstName: saved.firstName,
+      tourName:  saved.tour?.name ?? 'your tour',
+      status:    saved.status,
+    });
+
+    // The admin didn't do this — make sure they know it happened.
+    this.mailService.sendCustomerCancelledNotice({
+      id:        saved.id,
+      firstName: saved.firstName,
+      lastName:  saved.lastName,
+      email:     saved.email,
+      tourName:  saved.tour?.name ?? 'a tour',
+    });
+
+    return saved;
+  }
+
+  // Lets a logged-in customer edit trip details on their own booking
+  // while it's still 'pending' — travelers, timing preferences, contact
+  // info, and notes. Deliberately does NOT allow editing payment method,
+  // pricing, or add-ons: those were already charged/verified at
+  // checkout, and re-opening them here would mean re-running payment
+  // logic outside the checkout flow. If someone needs to change those,
+  // they should cancel (while still pending) and rebook.
+  async updateMyBooking(id: number, userId: string, dto: UpdateMyBookingDto): Promise<Booking> {
+    const booking = await this.findOne(id);
+
+    if (booking.userId !== userId) {
+      throw new ForbiddenException('This booking does not belong to you.');
+    }
+    if (booking.status !== 'pending') {
+      throw new BadRequestException(
+        'Only pending bookings can be edited. Please contact support for help with this booking.',
+      );
+    }
+
+    if (dto.travelers !== undefined) booking.travelers = dto.travelers;
+    if (dto.notes !== undefined) booking.notes = dto.notes;
+    if (dto.contactMethod !== undefined) booking.contactMethod = dto.contactMethod;
+    if (dto.contactValue !== undefined) booking.contactValue = dto.contactValue;
+    if (dto.preferredDate !== undefined) booking.preferredDate = dto.preferredDate;
+    if (dto.dateFlexibility !== undefined) booking.dateFlexibility = dto.dateFlexibility;
+    if (dto.flexibilityWindow !== undefined) {
+      booking.flexibilityWindow =
+        (dto.dateFlexibility ?? booking.dateFlexibility) === 'flexible' ? dto.flexibilityWindow : undefined;
+    }
+    if (dto.dateNotes !== undefined) booking.dateNotes = dto.dateNotes;
+
+    const saved = await this.bookingRepo.save(booking);
+    const full = await this.findOne(saved.id);
+
+    this.mailService.sendBookingUpdatedByCustomer({
+      id:                full.id,
+      email:             full.email,
+      firstName:         full.firstName,
+      tourName:          full.tour?.name ?? 'your tour',
+      travelers:         full.travelers,
+      preferredDate:     full.preferredDate,
+      dateFlexibility:   full.dateFlexibility,
+      flexibilityWindow: full.flexibilityWindow,
+      dateNotes:         full.dateNotes,
+      notes:             full.notes,
+    });
+
+    this.mailService.sendCustomerEditedNotice({
+      id:        full.id,
+      firstName: full.firstName,
+      lastName:  full.lastName,
+      email:     full.email,
+      tourName:  full.tour?.name ?? 'a tour',
     });
 
     return saved;

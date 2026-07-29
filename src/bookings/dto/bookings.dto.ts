@@ -108,8 +108,15 @@ export class CreateBookingDto {
   dateNotes?: string;
 
   // ── Email verification ──────────────────────────────────────
+  // Required for guest checkout — proves the person controls this
+  // email. Omitted for logged-in bookings; BookingsService skips this
+  // check entirely when a userId is attached (every account was
+  // already verified via this same flow at signup — see
+  // AuthService.register), so re-verifying at every checkout would be
+  // redundant friction for returning customers.
+  @IsOptional()
   @IsString()
-  emailVerificationToken: string;
+  emailVerificationToken?: string;
 
   // ── Card payment verification ───────────────────────────────
   // Signed token returned by POST /payments/card/charge. Required when
@@ -148,4 +155,44 @@ export class UpdateGuideCoordinationDto {
   @ValidateIf((o) => o.confirmedDepartureDate !== undefined && o.confirmedDepartureDate !== null)
   @IsString()
   confirmedDepartureDate?: string;
+}
+
+// Self-service edit for a logged-in customer's own PENDING booking.
+// Deliberately excludes payment method, pricing, and add-ons — those
+// were already charged/verified at checkout and aren't safe to change
+// outside that flow. All fields optional: only what's actually sent
+// gets updated (see BookingsService.updateMyBooking).
+export class UpdateMyBookingDto {
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  travelers?: number;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsOptional()
+  @IsIn(['email', 'whatsapp'])
+  contactMethod?: 'email' | 'whatsapp';
+
+  @IsOptional()
+  @IsString()
+  contactValue?: string;
+
+  @IsOptional()
+  @IsString()
+  preferredDate?: string;
+
+  @IsOptional()
+  @IsIn(['exact', 'flexible'])
+  dateFlexibility?: 'exact' | 'flexible';
+
+  @ValidateIf((o) => o.dateFlexibility === 'flexible')
+  @IsString()
+  flexibilityWindow?: string;
+
+  @IsOptional()
+  @IsString()
+  dateNotes?: string;
 }

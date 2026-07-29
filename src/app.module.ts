@@ -11,6 +11,8 @@ import { AuthModule } from './auth/auth.module';
 import { MailModule } from './mail/mail.module';
 import { EmailVerificationModule } from './email-verification/email-verification.module';
 import { PaymentsModule } from './payments/payments.module';
+import { InteractionsModule } from './interactions/interactions.module';
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -39,6 +41,8 @@ import { PaymentsModule } from './payments/payments.module';
     MailModule,
     EmailVerificationModule,
     PaymentsModule,
+    InteractionsModule,
+    UsersModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -365,4 +365,119 @@ export class MailService {
       console.error(`Failed to send guide coordination update to ${booking.email}:`, err);
     }
   }
+
+  /**
+   * Sent to the ADMIN inbox when a customer cancels their own booking
+   * (as opposed to an admin changing the status from the dashboard,
+   * which the admin already knows about since they did it themselves).
+   */
+  async sendCustomerCancelledNotice(booking: {
+    id: number;
+    firstName: string;
+    lastName: string;
+    email: string;
+    tourName: string;
+  }): Promise<void> {
+    const html = emailShell(`❌ Customer cancelled booking #${String(booking.id).padStart(4,'0')}`, `
+      <p><strong>${booking.firstName} ${booking.lastName}</strong> (${booking.email}) just cancelled their own booking from their account dashboard.</p>
+
+      <div class="info-box">
+        <p><strong>Booking ID:</strong> #${String(booking.id).padStart(4,'0')}</p>
+        <p><strong>Tour:</strong> ${booking.tourName}</p>
+        <p><strong>Status:</strong> <span class="status-badge status-cancelled">Cancelled</span></p>
+      </div>
+
+      <p style="font-size:13px;color:#64748b">No action needed unless you'd like to follow up with the customer.</p>
+    `);
+
+    try {
+      await this.mailerService.sendMail({
+        to: ADMIN_EMAIL,
+        subject: `Customer Cancelled — ${booking.tourName} (#${String(booking.id).padStart(4,'0')})`,
+        html,
+      });
+    } catch (err) {
+      console.error(`Failed to send customer-cancelled notice for booking #${booking.id}:`, err);
+    }
+  }
+
+  /**
+   * Sent to the CUSTOMER confirming their own edit to a pending booking
+   * went through, with a summary of the current (post-edit) details.
+   */
+  async sendBookingUpdatedByCustomer(booking: {
+    id: number;
+    email: string;
+    firstName: string;
+    tourName: string;
+    travelers: number;
+    preferredDate?: string;
+    dateFlexibility?: DateFlexibility;
+    flexibilityWindow?: string;
+    dateNotes?: string;
+    notes?: string;
+  }): Promise<void> {
+    const timingLabel = formatPreferredTiming(booking);
+
+    const html = emailShell(`✏️ Your booking has been updated`, `
+      <p>Hi <strong>${booking.firstName}</strong>,</p>
+      <p>We've updated booking <strong>#${String(booking.id).padStart(4,'0')}</strong> with the changes you made. Here's where things stand now:</p>
+
+      <div class="info-box">
+        <p><strong>Tour:</strong> ${booking.tourName}</p>
+        <p><strong>Travelers:</strong> ${booking.travelers}</p>
+        <p><strong>Requested start:</strong> ${timingLabel}</p>
+        ${booking.dateNotes ? `<p><strong>Timing notes:</strong> ${booking.dateNotes}</p>` : ''}
+        ${booking.notes ? `<p><strong>Special requests:</strong> ${booking.notes}</p>` : ''}
+      </div>
+
+      <p style="font-size:13px;color:#64748b">
+        This booking is still pending confirmation — you can make further changes from your account dashboard as long as it stays pending.
+      </p>
+    `);
+
+    try {
+      await this.mailerService.sendMail({
+        to: booking.email,
+        subject: `Booking Updated — ${booking.tourName} (#${String(booking.id).padStart(4,'0')})`,
+        html,
+      });
+    } catch (err) {
+      console.error(`Failed to send booking-updated confirmation to ${booking.email}:`, err);
+    }
+  }
+
+  /**
+   * Sent to the ADMIN inbox whenever a customer edits their own pending
+   * booking, so the team reviews the new details rather than working
+   * from stale ones.
+   */
+  async sendCustomerEditedNotice(booking: {
+    id: number;
+    firstName: string;
+    lastName: string;
+    email: string;
+    tourName: string;
+  }): Promise<void> {
+    const html = emailShell(`✏️ Customer updated booking #${String(booking.id).padStart(4,'0')}`, `
+      <p><strong>${booking.firstName} ${booking.lastName}</strong> (${booking.email}) just edited their own booking from their account dashboard.</p>
+
+      <div class="info-box">
+        <p><strong>Booking ID:</strong> #${String(booking.id).padStart(4,'0')}</p>
+        <p><strong>Tour:</strong> ${booking.tourName}</p>
+      </div>
+
+      <p style="font-size:13px;color:#64748b">Log in to the admin dashboard to review the updated details.</p>
+    `);
+
+    try {
+      await this.mailerService.sendMail({
+        to: ADMIN_EMAIL,
+        subject: `Booking Updated by Customer — ${booking.tourName} (#${String(booking.id).padStart(4,'0')})`,
+        html,
+      });
+    } catch (err) {
+      console.error(`Failed to send customer-edited notice for booking #${booking.id}:`, err);
+    }
+  }
 }

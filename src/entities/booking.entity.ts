@@ -86,6 +86,14 @@ export class Booking {
   @Column({ type: 'varchar', length: 255, nullable: true })
   contactValue: string;
 
+  // Set when the person was logged in at the time of booking (resolved
+  // server-side from their JWT — never trusted from client input). Guest
+  // checkouts (no account, or not logged in) simply leave this null; the
+  // booking is still fully identified by email/phone as before. Powers
+  // "my bookings" on the user dashboard and per-user recommendations.
+  @Column({ type: 'varchar', length: 36, nullable: true })
+  userId: string | null;
+
   // ── Preferred start timing ─────────────────────────────────────────
   // What the customer asked for at checkout — either an exact date, or
   // (when dateFlexibility === 'flexible') the 1st of a preferred month
@@ -97,7 +105,7 @@ export class Booking {
   dateFlexibility: 'exact' | 'flexible';
 
   @Column({ type: 'varchar', length: 50, nullable: true })
-  flexibilityWindow: string; // e.g. '±1 week', 'Whole month'
+  flexibilityWindow: string | undefined; // e.g. '±1 week', 'Whole month'
 
   @Column({ type: 'text', nullable: true })
   dateNotes: string;

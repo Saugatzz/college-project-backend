@@ -4,6 +4,7 @@ import { ChargeCardDto } from './dto/charge-card.dto';
 import { isValidLuhn } from './utils/luhn.util';
 import { CardPaymentVerificationService } from './card-payment-verification.service';
 import { lookupTestCard } from './utils/test-card.utils';
+import { SavedCardsService, SavedCardView } from './saved-cards.service';
 
 export interface CardChargeResult {
   transactionId: string;
@@ -17,6 +18,7 @@ export interface CardChargeResult {
 export class PaymentsService {
   constructor(
     private readonly cardPaymentVerificationService: CardPaymentVerificationService,
+    private readonly savedCardsService: SavedCardsService,
   ) {}
 
   // Fake/test-mode charge — no real gateway. Accepts Stripe-style test
@@ -24,17 +26,17 @@ export class PaymentsService {
   // fails basic structural checks a real processor would reject on
   // (Luhn checksum, expiry, positive amount). Raw card number and CVV
   // are NEVER persisted, logged, or returned — only last4 and a signed
-  // proof token leave this function.
-  chargeCard(dto: ChargeCardDto): CardChargeResult {
-    const digits = dto.cardNumber.replace(/\D/g, '');
-
+  // proof token leave this function. (Saving a card for later, when
+  // requested, is handled separately by SavedCardsService and still
+  // never touches the CVV.)
+  private runCharge(digits: string, expiry: string, amount: number): CardChargeResult {
     if (!isValidLuhn(digits)) {
       throw new BadRequestException(
         'Card number failed validation. Please check and try again.',
       );
     }
 
-    const [monthStr, yearStr] = dto.expiry.split('/');
+    const [monthStr, yearStr] = expiry.split('/');
     const month = parseInt(monthStr, 10);
     const year = 2000 + parseInt(yearStr, 10);
     const expiryEnd = new Date(year, month, 0, 23, 59, 59); // last day of expiry month
@@ -42,7 +44,7 @@ export class PaymentsService {
       throw new BadRequestException('This card has expired.');
     }
 
-    if (dto.amount <= 0) {
+    if (amount <= 0) {
       throw new BadRequestException('Invalid charge amount.');
     }
 
@@ -53,8 +55,30 @@ export class PaymentsService {
 
     const transactionId = `txn_${crypto.randomBytes(10).toString('hex')}`;
     const last4 = digits.slice(-4);
-    const token = this.cardPaymentVerificationService.sign(transactionId, last4, dto.amount);
+    const token = this.cardPaymentVerificationService.sign(transactionId, last4, amount);
 
-    return { transactionId, last4, amount: dto.amount, status: 'succeeded', token };
+    return { transactionId, last4, amount, status: 'succeeded', token };
+  }
+
+  async chargeCard(dto: ChargeCardDto, userId?: string | null): Promise<CardChargeResult & { savedCard?: SavedCardView }> {
+    const digits = dto.cardNumber.replace(/\D/g, '');
+    const result = this.runCharge(digits, dto.expiry, dto.amount);
+
+    if (dto.saveCard && userId) {
+      const [monthStr, yearStr] = dto.expiry.split('/');
+      const savedCard = await this.savedCardsService.save(userId, digits, monthStr, yearStr);
+      return { ...result, savedCard };
+    }
+
+    return result;
+  }
+
+  // Charges using a previously-saved card. The CVV is still required and
+  // format-checked (never stored, so there's nothing to compare it
+  // against beyond that — identical to how the fake gateway already
+  // treats CVV for a fresh card).
+  async chargeSavedCard(userId: string, cardId: string, amount: number): Promise<CardChargeResult> {
+    const { digits, expiry } = await this.savedCardsService.getForCharge(userId, cardId);
+    return this.runCharge(digits, expiry, amount);
   }
 }
